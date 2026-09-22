@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import traceback
 import inspect
@@ -114,6 +115,7 @@ class afc:
         self._last_td1_query:float    = 0
         self.lane_data_enabled  = False
         self.prep_done          = False         # Variable used to hold of save_vars function from saving too early and overriding save before prep can be ran
+        self.var_file_unreadable = False        # Set by PREP when the var file existed but could not be read; blocks save_vars() so the unreadable saved state is not overwritten with freshly-defaulted values
         self.in_print_timer     = None
         self.activate_cb_done = True
         self.db_backup          = False
@@ -1226,6 +1228,13 @@ class afc:
 
         # Return early if prep is not done so that file is not overridden until prep is at least done
         if not self.prep_done: return
+        # The var file existed but could not be read, so nothing was restored and the
+        # in-memory values are freshly-defaulted. Writing them now would overwrite the
+        # on-disk state (e.g. a lane's runout_lane) before the user can recover it.
+        if self.var_file_unreadable:
+            self.logger.warning("Not saving variables: the var file could not be read at PREP, "
+                                "so saving would overwrite the existing file with default values.")
+            return
         str = {}
         for UNIT in self.units.keys():
             cur_unit=self.units[UNIT]
@@ -1250,8 +1259,19 @@ class afc:
             str["system"]["extruders"][cur_extruder.name]['lane_loaded'] = cur_extruder.lane_loaded
 
         try:
-            with open(self.VarFile+ '.unit', 'w') as f:
+            # Written via a temp file and atomic rename: opening the target with 'w'
+            # truncates it to zero bytes before the new content is written, so a
+            # crash or power loss mid-write leaves an empty file. PREP treats an
+            # empty file the same as a missing one and, having restored nothing,
+            # saves its defaults back over it -- permanently discarding saved lane
+            # state such as runout_lane (the infinite-spool failover target).
+            var_file = self.VarFile + '.unit'
+            tmp_file = var_file + '.tmp'
+            with open(tmp_file, 'w') as f:
                 f.write(json.dumps(str, indent=4))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, var_file)
         except Exception as e:
             self.logger.error("Error happened when trying to save variables, check AFC.log for error")
             self.logger.debug(f"Error:{e}\n{traceback.format_exc()}", only_debug=True)

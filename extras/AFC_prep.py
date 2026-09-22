@@ -119,8 +119,22 @@ class afcPrep:
                 return
 
         else:
-            error_string = 'Error: {}.unit file not found. Please check the path in the '.format(self.afc.VarFile)
-            error_string += 'AFC.cfg file and make sure the file and path exists.'
+            # An empty file lands here too, and "not found" is misleading in that case.
+            # PREP cannot return here: on a genuine first run there is no file yet and
+            # returning would deadlock startup. In that case saving is how the file gets
+            # created, so must stay allowed. But an existing-yet-unreadable file means
+            # saved state was lost, and saving AFC's freshly-defaulted values over it
+            # would make that loss permanent -- so block the save in that case only.
+            var_file = '{}.unit'.format(self.afc.VarFile)
+            if os.path.exists(var_file):
+                error_string = ('Error: {} exists but is empty or unreadable. AFC will start '
+                                'with default values and will NOT save over it, to avoid '
+                                'discarding saved lane state. Restore the file, or delete it '
+                                'to let AFC recreate it.').format(var_file)
+                self.afc.var_file_unreadable = True
+            else:
+                error_string = 'Error: {} file not found. Please check the path in the '.format(self.afc.VarFile)
+                error_string += 'AFC.cfg file and make sure the file and path exists.'
             self.afc.error.AFC_error(error_string, False)
 
         # check if Lane is supposed to be loaded in tool head from saved file
