@@ -1,0 +1,88 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          afc-patch
+# Required-Start:    $local_fs
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:
+# Short-Description: Bind-mount patched AFC.py over the read-only Klipper copy
+### END INIT INFO
+#
+# The root filesystem is a read-only squashfs, so vendor Klipper modules cannot be
+# edited in place. This overlays a patched AFC.py from the writable /data partition
+# onto the vendor path before Klipper starts.
+#
+# Patches applied:
+#   1. cmd_TOOL_UNLOAD returned silently when no lane was registered, so the
+#      unload button did nothing and logged nothing.
+#   2. TOOL_UNLOAD returned True without unloading when self.current was None,
+#      reporting success while nothing moved.
+#   3. LANE_UNLOAD warning said "Unloading is not supported on <unit>", which named
+#      the whole CANVAS box for a per-lane limitation; now names the lane and says
+#      "Ejecting" to match the command.
+#
+# NOTE: always update PATCH_SRC in place (cp, do NOT mv/rm). The bind mount binds
+# the inode, so replacing the file leaves the mount pointing at the old content.
+#
+# To revert: /etc/init.d/afc-patch stop   (or delete this file + reboot)
+
+PATCH_SRC="/data/afc-patch/AFC.py"
+PATCH_DST="/usr/share/klipper/klippy/extras/AFC.py"
+EXPECT_MD5="4139199dca7b808c0f5a389650841640"
+
+log() { echo "afc-patch: $*"; }
+
+do_umount() {
+    if grep -q " $PATCH_DST " /proc/mounts 2>/dev/null; then
+        umount "$PATCH_DST" && log "unmounted, vendor AFC.py restored" \
+                          || log "ERROR umount failed"
+    else
+        log "not mounted"
+    fi
+}
+
+do_mount() {
+    if [ ! -f "$PATCH_SRC" ]; then
+        log "patched file $PATCH_SRC missing - using vendor AFC.py"
+        return 0
+    fi
+    actual_md5=$(md5sum "$PATCH_SRC" | cut -d" " -f1)
+    if [ "$actual_md5" != "$EXPECT_MD5" ]; then
+        log "WARNING checksum mismatch on $PATCH_SRC (got $actual_md5, expected $EXPECT_MD5)"
+        log "proceeding anyway - verify the patch is correct"
+    fi
+    # Always drop a stale mount first: if PATCH_SRC was replaced via mv/rm, the
+    # existing mount still exposes the previous inode and would silently run old code.
+    if grep -q " $PATCH_DST " /proc/mounts 2>/dev/null; then
+        mounted_md5=$(md5sum "$PATCH_DST" | cut -d" " -f1)
+        if [ "$mounted_md5" = "$actual_md5" ]; then
+            log "already mounted with current patch"
+            return 0
+        fi
+        log "stale mount detected (running $mounted_md5), remounting"
+        umount "$PATCH_DST" || { log "ERROR could not unmount stale mount"; return 1; }
+    fi
+    [ -e "$PATCH_DST" ] || mkdir -p "$(dirname "$PATCH_DST")"
+    if mount --bind "$PATCH_SRC" "$PATCH_DST"; then
+        log "mounted patched AFC.py over vendor path"
+    else
+        log "ERROR bind mount failed - continuing with vendor AFC.py"
+        return 1
+    fi
+}
+
+case "$1" in
+    start)   do_mount ;;
+    stop)    do_umount ;;
+    restart) do_umount; do_mount ;;
+    status)
+        if grep -q " $PATCH_DST " /proc/mounts 2>/dev/null; then
+            log "ACTIVE (patched AFC.py mounted)"
+        else
+            log "INACTIVE (vendor AFC.py in use)"
+        fi
+        md5sum "$PATCH_DST"
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
+exit 0

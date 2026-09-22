@@ -1,0 +1,76 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          afc-patch
+# Required-Start:    $local_fs
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:
+# Short-Description: Bind-mount patched AFC.py over the read-only Klipper copy
+### END INIT INFO
+#
+# The root filesystem is a read-only squashfs, so vendor Klipper modules cannot be
+# edited in place. This overlays a patched AFC.py from the writable /data partition
+# onto the vendor path before Klipper starts.
+#
+# Fixes two silent no-ops in cmd_TOOL_UNLOAD / TOOL_UNLOAD:
+#   1. cmd_TOOL_UNLOAD returned silently when no lane was registered, so the
+#      unload button did nothing and logged nothing.
+#   2. TOOL_UNLOAD returned True without unloading when self.current was None,
+#      reporting success while nothing moved.
+#
+# To revert: /etc/init.d/afc-patch disable   (or delete this file + reboot)
+
+PATCH_SRC="/data/afc-patch/AFC.py"
+PATCH_DST="/usr/share/klipper/klippy/extras/AFC.py"
+EXPECT_MD5="a9e01cef042b18ed1db2b91645428747"
+
+log() { echo "afc-patch: $*"; }
+
+do_mount() {
+    if [ ! -f "$PATCH_SRC" ]; then
+        log "patched file $PATCH_SRC missing - skipping (using vendor AFC.py)"
+        return 0
+    fi
+    if mountpoint -q "$PATCH_DST" 2>/dev/null; then
+        log "already mounted"
+        return 0
+    fi
+    actual_md5=$(md5sum "$PATCH_SRC" | cut -d' ' -f1)
+    if [ "$actual_md5" != "$EXPECT_MD5" ]; then
+        log "WARNING checksum mismatch on $PATCH_SRC (got $actual_md5, expected $EXPECT_MD5)"
+        log "proceeding anyway - verify the patch is correct"
+    fi
+    mkdir -p "$PATCH_DST"
+    if mount --bind "$PATCH_SRC" "$PATCH_DST"; then
+        log "mounted patched AFC.py over vendor path"
+    else
+        log "ERROR bind mount failed - continuing with vendor AFC.py"
+        return 1
+    fi
+}
+
+do_umount() {
+    if mountpoint -q "$PATCH_DST" 2>/dev/null; then
+        umount "$PATCH_DST" && log "unmounted, vendor AFC.py restored" \
+                          || log "ERROR umount failed"
+    else
+        log "not mounted"
+    fi
+}
+
+case "$1" in
+    start)   do_mount ;;
+    stop)    do_umount ;;
+    restart) do_umount; do_mount ;;
+    status)
+        if mountpoint -q "$PATCH_DST" 2>/dev/null; then
+            log "ACTIVE (patched AFC.py mounted)"
+            md5sum "$PATCH_DST"
+        else
+            log "INACTIVE (vendor AFC.py in use)"
+            md5sum "$PATCH_DST"
+        fi
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
+exit 0
