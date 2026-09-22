@@ -144,3 +144,5 @@ klippy-test-results*.xml
 site/
 
 .claude/
+
+.DS_Store
