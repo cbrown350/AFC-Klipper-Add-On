@@ -1849,7 +1849,21 @@ class afc:
 
         lane = gcmd.get('LANE', self.current)
         if lane is None:
-            return
+            # self.current resolves through the extruder's lane_loaded record, which can be
+            # left unset after an error pause. Fall back to any lane still flagged as
+            # tool_loaded so the unload button keeps working in that state.
+            for lane_name, lane_obj in self.lanes.items():
+                if lane_obj.tool_loaded:
+                    lane = lane_name
+                    self.logger.info(
+                        "TOOL_UNLOAD: no current lane registered, using {} (tool_loaded=True)".format(lane_name))
+                    break
+        if lane is None:
+            self.error.AFC_error(
+                "TOOL_UNLOAD: no lane is loaded in the toolhead and no LANE was given. "
+                "Pass LANE=<lane> (e.g. TOOL_UNLOAD LANE=lane1) to unload a specific lane.",
+                pause=False)
+            return False
         if lane not in self.lanes:
             self.logger.info('{} Unknown'.format(lane))
             return
@@ -1949,7 +1963,18 @@ class afc:
 
             self.logger.debug(f"Next lane load:{self.next_lane_load}, lanes:{cur_extruder.lanes}, current lane:{cur_lane}, unload_toolhead:{unload_toolhead}")
 
-        if self.current is not None and unload_toolhead:
+        if self.current is None:
+            # AFC has no lane registered as loaded in the toolhead, so it cannot know what to
+            # unload. This previously fell through to `return True`, making callers and the UI
+            # believe the unload succeeded while no filament actually moved.
+            self.error.AFC_error(
+                "TOOL_UNLOAD: no lane is registered as loaded in the toolhead. "
+                "Run SET_LANE_LOADED LANE=<lane> to re-sync AFC, then retry.",
+                pause=False)
+            self.current_state = State.IDLE
+            return False
+
+        if unload_toolhead:
             self.current_state  = State.UNLOADING
             self.current_loading = cur_lane.name
             self.logger.info("Unloading {}".format(cur_lane.name))
